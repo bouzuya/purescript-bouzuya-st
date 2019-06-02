@@ -1,3 +1,5 @@
+-- priority queue
+-- binary heap (max-heap)
 module Bouzuya.ST.PriorityQueue
   ( PriorityQueue
   , dequeue
@@ -26,13 +28,13 @@ data PriorityQueue r a = PriorityQueue (STArray r a)
 -- | extract maximum value
 dequeue :: forall r a. Ord a => PriorityQueue r a -> ST r (Maybe a)
 dequeue (PriorityQueue xs) = do
-  maxMaybe <- STArray.shift xs
-  minMaybe' <- STArray.pop xs
-  case minMaybe' of
+  maxMaybe <- STArray.peek 0 xs
+  lastMaybe <- STArray.pop xs
+  case lastMaybe of
     Maybe.Nothing -> pure unit
     Maybe.Just x -> do
-      _ <- STArray.unshift x xs
-      _ <- update 0 xs
+      _ <- STArray.poke 0 x xs
+      _ <- maxHeapify 0 xs
       pure unit
   pure maxMaybe
 
@@ -42,24 +44,25 @@ empty = map PriorityQueue STArray.empty
 enqueue :: forall r a. Ord a => a -> PriorityQueue r a -> ST r Unit
 enqueue x (PriorityQueue xs) = do
   l <- STArray.push x xs
-  iRef <- STRef.new (l - 1)
-  ST.while
-    do
-      i <- STRef.read iRef
-      pMaybe <- parent i xs
-      case pMaybe of
-        Maybe.Nothing -> pure false
-        Maybe.Just (Tuple.Tuple _ p) -> do
-          pure (x > p)
-    do
-      i <- STRef.read iRef
-      pMaybe <- parent i xs
-      case pMaybe of
-        Maybe.Nothing -> Unsafe.unsafeCrashWith "no parent index"
-        Maybe.Just (Tuple.Tuple pi _) -> do
-          _ <- swap i pi xs
-          _ <- STRef.write pi iRef
-          pure unit
+  case l of
+    1 -> pure unit
+    _ -> do
+      iRef <- STRef.new (l - 1)
+      ST.while
+        do
+          i <- STRef.read iRef
+          pMaybe <- parent i xs
+          case pMaybe of
+            Maybe.Just (Tuple.Tuple pi p) -> do
+              if x > p
+                then do
+                  _ <- swap i pi xs
+                  _ <- STRef.write pi iRef
+                  pure true
+                else
+                  pure false
+            Maybe.Nothing -> pure false
+        (pure unit)
 
 fromArray :: forall r a. Ord a => Array a -> ST r (PriorityQueue r a)
 fromArray xs = (STArray.thaw xs) >>= fromSTArray
@@ -67,25 +70,25 @@ fromArray xs = (STArray.thaw xs) >>= fromSTArray
 fromSTArray :: forall r a. Ord a => STArray r a -> ST r (PriorityQueue r a)
 fromSTArray xs = do
   l <- map Array.length (STArray.unsafeFreeze xs)
-  case parentIndex (l - 1) of
-    Maybe.Nothing -> do
-      pure (PriorityQueue xs)
-    Maybe.Just pi -> do
-      ST.for 0 (pi + 1) (\i -> update (pi - i) xs)
+  case l of
+    0 -> pure (PriorityQueue xs)
+    1 -> pure (PriorityQueue xs)
+    _ -> do
+      let pi = parentIndex (l - 1)
+      ST.for 0 (pi + 1) (\i -> maxHeapify (pi - i) xs)
       pure (PriorityQueue xs)
 
 -- private
 
 parent :: forall r a. Int -> STArray r a -> ST r (Maybe (Tuple Int a))
-parent i xs =
-  case parentIndex i of
-    Maybe.Nothing -> pure Maybe.Nothing
-    Maybe.Just i' -> map (map (Tuple.Tuple i')) (STArray.peek i' xs)
+parent i xs
+  | i == 0 = pure Maybe.Nothing
+  | otherwise =
+    let i' = parentIndex i
+    in map (map (Tuple.Tuple i')) (STArray.peek i' xs)
 
-parentIndex :: Int -> Maybe Int
-parentIndex i
-  | i <= 0 = Maybe.Nothing
-  | otherwise = Maybe.Just ((i - 1) / 2)
+parentIndex :: Int -> Int
+parentIndex i = (i - 1) / 2
 
 leftChild :: forall r a. Int -> STArray r a -> ST r (Maybe (Tuple Int a))
 leftChild i xs =
@@ -94,11 +97,11 @@ leftChild i xs =
 
 rightChild :: forall r a. Int -> STArray r a -> ST r (Maybe (Tuple Int a))
 rightChild i xs =
-  let i' = (i + 1) * 2
+  let i' = (i * 2) + 2
   in map (map (Tuple.Tuple i')) (STArray.peek i' xs)
 
-update :: forall r a. Ord a => Int -> STArray r a -> ST r Unit
-update i xs = do
+maxHeapify :: forall r a. Ord a => Int -> STArray r a -> ST r Unit
+maxHeapify i xs = do
   xs' <- STArray.unsafeFreeze xs
   lMaybe <- leftChild i xs
   rMaybe <- rightChild i xs
@@ -118,7 +121,7 @@ update i xs = do
   if maxI /= i
     then do
       _ <- swap i maxI xs
-      update maxI xs
+      maxHeapify maxI xs
     else pure unit
 
 swap :: forall r a. Int -> Int -> STArray r a -> ST r Boolean
